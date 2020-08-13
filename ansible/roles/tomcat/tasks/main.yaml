@@ -1,61 +1,56 @@
 ---
-- name: include variables
+- name: upload image vars
+  include_vars:
+    file: ./image.yaml
+- name: upload vars
   include_vars:
     file: myvars.yaml
-- name: Install Java 1.7
-  yum: name=java-1.7.0-openjdk state=present
+- name: note that encrypted volumes are only supported in >= Ansible 2.4
+  ec2_lc:
+    region: "{{ awsregion }}"
+    name: "webapp-{{ versionid }}"
+    image_id: "{{ webappimageid }}"
+    key_name: "{{ keypairname }}"
+    security_groups:
+      - "{{ sgname }}"
+    instance_type: t2.micro
+- name: Create a Security group for EC2
+  ec2_group:
+    region: "{{ awsregion }}"
+    name: "{{ lbsgname }}"
+    description: web server security Group
+    vpc_id: "{{ vpcid }}"
+    rules:
+      - proto: tcp
+        from_port: 80
+        to_port: 80
+        cidr_ip: 0.0.0.0/0
+- ec2_elb_lb:
+    region: "{{ awsregion }}"
+    name: "webapplb"
+    state: present
+    zones:
+      - us-east-1a
+      - us-east-1b
+    security_group_names:
+      - "{{ lbsgname }}"
+    listeners:
+      - protocol: http # options are http, https, ssl, tcp
+        load_balancer_port: 80
+        instance_port: 8080
+        proxy_protocol: True
 
-- name: add group "tomcat"
-  group: name=tomcat
-
-- name: add user "tomcat"
-  user: name=tomcat group=tomcat home=/usr/share/tomcat createhome=no
-  become: True
-  become_method: sudo
-
-- name: Download Tomcat
-  get_url: url=http://archive.apache.org/dist/tomcat/tomcat-7/v7.0.61/bin/apache-tomcat-7.0.61.tar.gz dest=/opt/apache-tomcat-7.0.61.tar.gz
-
-- name: Extract archive
-  command: chdir=/usr/share /bin/tar xvf /opt/apache-tomcat-7.0.61.tar.gz -C /opt/ creates=/opt/apache-tomcat-7.0.61
-
-- name: Symlink install directory
-  file: 
-    src: /opt/apache-tomcat-7.0.61 
-    path: /usr/share/tomcat
-    state: link
-
-- name: Change ownership of Tomcat installation
-  file: path=/usr/share/tomcat/ owner=tomcat group=tomcat state=directory recurse=yes
-
-- name: Configure Tomcat server
-  template: 
-    src: server.xml 
-    dest: /usr/share/tomcat/conf/
-  notify: restart tomcat
-
-- name: Configure Tomcat users
-  template: 
-    src: tomcat-users.xml 
-    dest: /usr/share/tomcat/conf/
-  notify: restart tomcat
-
-- name: Install Tomcat init script
-  copy: 
-    src: tomcat-initscript.sh 
-    dest: /etc/init.d/tomcat 
-    mode: 0755
-
-- name: Start Tomcat
-  service: name=tomcat state=started enabled=yes
- 
-- name: copy war file
-  copy:
-    src: "{{ warfile }}"
-    dest: /usr/share/tomcat/webapps/java-tomcat-maven-example.war
-    owner: tomcat
-    group: tomcat
-  notify: restart tomcat
-
-- name: wait for tomcat to start
-  wait_for: port={{http_port}}
+- ec2_asg:
+    region: "{{ awsregion }}"
+    name: webapp
+    load_balancers:
+      - webapplb
+    launch_config_name: "webapp-{{ versionid }}"
+    min_size: 2
+    max_size: 10
+    desired_capacity: 2
+    vpc_zone_identifier: 
+      - "{{ subnetid1 }}"
+      - "{{ subnetid2 }}"
+    tags:
+      - environment: production
